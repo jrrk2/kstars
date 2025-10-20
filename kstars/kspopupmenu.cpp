@@ -442,6 +442,7 @@ void KSPopupMenu::initPopupMenu(SkyObject *obj, const QString &name, const QStri
 
     addAction(QIcon::fromTheme("view-list-details"), i18n("View in What's Interesting"),
               this, SLOT(slotViewInWI()));
+    createOriginMenu(obj);
 }
 
 void KSPopupMenu::initFlagActions(SkyObject *obj)
@@ -723,4 +724,61 @@ void KSPopupMenu::slotViewInWI()
         KStars::Instance()->slotToggleWIView();
     KStars::Instance()->wiView()->inspectSkyObject(
         KStars::Instance()->map()->clickedObject());
+}
+
+void KSPopupMenu::createOriginMenu(SkyObject *obj)
+{
+    QMenu *originMenu = addMenu(i18n("Origin Telescope"));
+    
+    QAction *connectAction = originMenu->addAction(i18n("Connect"));
+    connect(connectAction, &QAction::triggered, []() {
+        SkyMap *map = SkyMap::Instance();
+        if (map && map->originMount()) {
+            if (map->originMount()->connect("192.168.1.169", 80)) {
+                qDebug() << "Connected to Origin telescope";
+            }
+        }
+    });
+    
+    QAction *slewAction = originMenu->addAction(i18n("Slew Here"));
+    connect(slewAction, &QAction::triggered, [obj]() {
+        if (obj) {
+            SkyMap *map = SkyMap::Instance();
+            if (map && map->originMount()) {
+                double ra = obj->ra().Hours();
+                double dec = obj->dec().Degrees();
+                map->originMount()->slew(ra, dec);
+            }
+        }
+    });
+    
+    QAction *syncAction = originMenu->addAction(i18n("Sync Here"));
+    connect(syncAction, &QAction::triggered, [obj]() {
+        if (obj) {
+            SkyMap *map = SkyMap::Instance();
+            if (map && map->originMount()) {
+                double ra = obj->ra().Hours();
+                double dec = obj->dec().Degrees();
+                map->originMount()->sync(ra, dec);
+            }
+        }
+    });
+    
+    originMenu->addSeparator();
+    
+    QAction *parkAction = originMenu->addAction(i18n("Park"));
+    connect(parkAction, &QAction::triggered, []() {
+        SkyMap *map = SkyMap::Instance();
+        if (map && map->originMount()) {
+            map->originMount()->park();
+        }
+    });
+    
+    QAction *abortAction = originMenu->addAction(i18n("Abort"));
+    connect(abortAction, &QAction::triggered, []() {
+        SkyMap *map = SkyMap::Instance();
+        if (map && map->originMount()) {
+            map->originMount()->abort();
+        }
+    });
 }

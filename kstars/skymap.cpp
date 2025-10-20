@@ -286,6 +286,12 @@ SkyMap::SkyMap()
     m_iboxes->addInfoBox(m_timeBox);
     m_iboxes->addInfoBox(m_geoBox);
     m_iboxes->addInfoBox(m_objBox);
+
+    m_originMount = new Ekos::OriginMount(this);
+    connect(m_originMount, &Ekos::OriginMount::connected, []() {
+        qDebug() << "Origin telescope connected!";
+    });
+
 }
 
 void SkyMap::slotToggleGeoBox(bool flag)

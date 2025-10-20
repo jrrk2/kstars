@@ -12,6 +12,7 @@
 #include "printing/legend.h"
 #include "skyobjects/skypoint.h"
 #include "skyobjects/skyline.h"
+#include "ekos/mount/originmount.h"
 #include "nan.h"
 
 #include <QGraphicsView>
@@ -79,6 +80,8 @@ class SkyMap : public QGraphicsView
         {
             return pinstance->isSlewing();
         }
+
+        Ekos::OriginMount* originMount() { return m_originMount; }
 
         /** Destructor (empty) */
         ~SkyMap() override;
@@ -807,4 +810,5 @@ class SkyMap : public QGraphicsView
 
         // Extra rotation applied to FOV symbols.
         double m_fovExtraRotation { 0.0 };
+	Ekos::OriginMount *m_originMount {nullptr};
 };

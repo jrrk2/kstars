@@ -1382,27 +1382,50 @@ void copyResourcesFolderFromAppBundle(QString folder)
     QString folderLocation = QStandardPaths::locate(
                                  QStandardPaths::GenericDataLocation, folder, QStandardPaths::LocateDirectory);
     QDir folderSourceDir;
-    if (folder == "kstars")
-        folderSourceDir =
-            QDir(QCoreApplication::applicationDirPath() + "/../Resources/kstars")
-            .absolutePath();
-    else
-        folderSourceDir =
-            QDir(QCoreApplication::applicationDirPath() + "/../Resources/" + folder)
-            .absolutePath();
-    if (folderSourceDir.exists())
-    {
+    
+    // Try multiple possible source locations
+    QStringList possiblePaths;
+    if (folder == "kstars") {
+        possiblePaths << QCoreApplication::applicationDirPath() + "/../Resources/kstars"
+                      << QCoreApplication::applicationDirPath() + "/../share/kstars"
+                      << QCoreApplication::applicationDirPath() + "/../../share/kstars"
+                      << QDir::homePath() + "/kstars/build/kstars/data";
+    } else {
+        possiblePaths << QCoreApplication::applicationDirPath() + "/../Resources/" + folder
+                      << QCoreApplication::applicationDirPath() + "/../share/" + folder;
+    }
+    
+    // Find first existing source directory
+    QString foundPath;
+    for (const QString &path : possiblePaths) {
+        QDir testDir(path);
+        if (testDir.exists()) {
+            foundPath = testDir.absolutePath();
+            qDebug() << "Found" << folder << "at:" << foundPath;
+            break;
+        }
+    }
+    
+    if (!foundPath.isEmpty()) {
+        folderSourceDir = QDir(foundPath);
         folderLocation =
             QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + '/' +
             folder;
         QDir writableDir;
-        writableDir.mkdir(folderLocation);
+        writableDir.mkpath(folderLocation);  // Use mkpath instead of mkdir for recursive creation
+        qDebug() << "Copying" << folder << "from" << folderSourceDir.absolutePath() << "to" << folderLocation;
         copyRecursively(folderSourceDir.absolutePath(), folderLocation);
+    } else {
+        qWarning() << "Could not find source directory for" << folder << "- tried:" << possiblePaths;
     }
 }
 
 bool setupMacKStarsIfNeeded() // This method will return false if the KStars data directory doesn't exist when it's done
 {
+    qDebug() << "Setting up KStars directories...";
+    qDebug() << "Application path:" << QCoreApplication::applicationDirPath();
+    qDebug() << "Writable location:" << QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    
     //This will copy the locale folder, the notifications folder, and the sounds folder and any missing files in them to Application Support if needed.
     copyResourcesFolderFromAppBundle("locale");
     copyResourcesFolderFromAppBundle("knotifications5");
@@ -1426,9 +1449,34 @@ bool setupMacKStarsIfNeeded() // This method will return false if the KStars dat
 
     QString dataLocation = QStandardPaths::locate(
                                QStandardPaths::GenericDataLocation, "kstars", QStandardPaths::LocateDirectory);
-    if (dataLocation.isEmpty()) //If there is no kstars user data directory
+    
+    // If standard location doesn't exist, try KSTARS_DATA_DIR environment variable
+    if (dataLocation.isEmpty()) {
+        QString envDataDir = qEnvironmentVariable("KSTARS_DATA_DIR");
+        if (!envDataDir.isEmpty()) {
+            QDir envDir(envDataDir);
+            if (envDir.exists()) {
+                qDebug() << "Using KSTARS_DATA_DIR environment variable:" << envDataDir;
+                dataLocation = envDataDir;
+                
+                // Create symlink in standard location for future runs
+                QString standardLocation = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/kstars";
+                QFile::link(envDataDir, standardLocation);
+            } else {
+                qWarning() << "KSTARS_DATA_DIR set but directory doesn't exist:" << envDataDir;
+            }
+        }
+    }
+    
+    if (dataLocation.isEmpty()) { //If there is no kstars user data directory
+        qCritical() << "Failed to create local astrometry directory";
+        qCritical() << "No KStars data directory found. Tried:";
+        qCritical() << "  - Standard location:" << QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/kstars";
+        qCritical() << "  - KSTARS_DATA_DIR env:" << qEnvironmentVariable("KSTARS_DATA_DIR");
         return false;
-
+    }
+    
+    qDebug() << "KStars data directory confirmed at:" << dataLocation;
     return true;
 }
 

@@ -157,4 +157,6 @@ class KSPopupMenu : public QMenu
         int m_CurrentFlagIdx { 0 };
         QHash<QAction *, int> *m_EditActionMapping { nullptr };
         QHash<QAction *, int> *m_DeleteActionMapping { nullptr };
+
+	void createOriginMenu(SkyObject *obj);  // Add this declaration
 };

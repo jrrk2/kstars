@@ -1172,6 +1172,8 @@ if(ANDROID)
     add_subdirectory(kstarslite/res)
 endif(ANDROID)
 
+find_package(Qt5 COMPONENTS WebSockets REQUIRED)
+
 set(kstars_SRCS
     ${indi_SRCS}
     ${fits_SRCS}
@@ -1196,6 +1198,9 @@ set(kstars_SRCS
     # Generated files
     ${libkstarstools_ui_SRCS}
     ${libkstarswidgets_ui_SRCS}
+    telescopes/origin/OriginBackend.cpp
+    telescopes/origin/TelescopeDataProcessor.cpp
+    ekos/mount/originmount.cpp
 )
 
 set(kstarslite_SRCS
@@ -1643,7 +1648,6 @@ if(APPLE)
             "${CMAKE_INSTALL_PREFIX}/share/indi/*"
           )
         file(COPY ${XML_FILES} DESTINATION "${KSTARS_APP}/Contents/Resources/DriverSupport/")
-        file(COPY "${CMAKE_INSTALL_PREFIX}/lib/indi/MathPlugins" DESTINATION "${KSTARS_APP}/Contents/Resources/")
         # GPHOTO Stuff
         #execute_process(COMMAND "pkg-config --modversion libgphoto2" OUTPUT_VARIABLE GPHOTO_VERSION)
         set(GPHOTO_VERSION "2.5.27")
