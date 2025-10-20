@@ -19,10 +19,12 @@ OriginMount::OriginMount(QObject *parent)
         emit coordsChanged(s.raPosition, s.decPosition);
         emit statusChanged();
     });
+    /*    
     QObject::connect(m_backend, &OriginBackend::imageReady,
                     this, [this]() {
         emit imageReady(m_backend->getLastImage());
     });
+    */
     QObject::connect(m_backend, &OriginBackend::tiffImageDownloaded,
                     this, [this](const QString&, const QByteArray& data, double, double, double) {
         emit snapshotReady(data);

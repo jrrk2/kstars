@@ -84,6 +84,18 @@ public:
     int m_nextSequenceId;
 
     // Camera operations
+    bool startExposure(double duration, int iso = 200);
+    bool abortExposure();
+    bool isCameraExposing() const { return m_cameraState == CameraState::Exposing; }
+    QByteArray getLastImageData() const { return m_lastImageData; }
+    QString getLastImageFormat() const { return m_lastImageFormat; }
+    
+    // Camera properties
+    double getLastExposureDuration() const { return m_lastExposureDuration; }
+    QString getLastExposureStartTime() const { return m_lastExposureStartTime; }
+    int getCurrentGain() const { return m_currentGain; }
+    bool setGain(int gain);
+  
     bool isCameraLogicallyConnected() const { return m_status.isCameraLogicallyConnected; }
     void setCameraConnected(bool connected);
     bool isExposing() const;
@@ -91,7 +103,6 @@ public:
     QImage getLastImage() const;
     void setLastImage(const QImage& image);
     void setImageReady(bool ready);
-    bool abortExposure();
     QImage singleShot(int gain, int binning, int exposureTimeMicroseconds);
     void sendCommand(const QString& command, const QString& destination, 
                     const QJsonObject& params = QJsonObject());
@@ -114,6 +125,10 @@ public:
     bool takeSingleSnapshot();
     double radiansToHours(double radians);
     double radiansToDegrees(double radians);
+    // Image saving for debugging
+    void enableImageSaving(bool enable = true);
+    void setImageSavePath(const QString& path);
+    QString getImageSavePath() const { return m_imageSavePath; }
 
 signals:
     void connected();
@@ -121,6 +136,10 @@ signals:
     void statusUpdated();
     void imageReady();
     // Camera-related signals
+    void exposureStarted();
+    void exposureComplete();
+    void imageReady(const QString& fileLocation);
+    void cameraStateChanged(int state); // 0=idle, 1=exposing, 2=reading
     void cameraModeChanged(bool isManual);
     void captureParametersChanged(double exposure, int iso);
     void cameraInfoReceived(const QString& cameraID, const QString& model);
@@ -132,10 +151,31 @@ signals:
 private slots:
     void onWebSocketConnected();
     void onWebSocketDisconnected();
+    void onImageDownloadFinished(QNetworkReply* reply);
     void onTextMessageReceived(const QString &message);
     void updateStatus();
 
 private:
+    enum class CameraState {
+        Idle = 0,
+        Exposing = 1,
+        Reading = 2,
+        Error = 3
+    };
+    
+    CameraState m_cameraState;
+    QByteArray m_lastImageData;
+    QString m_lastImageFormat;
+    double m_lastExposureDuration;
+    QString m_lastExposureStartTime;
+    int m_currentGain;
+    QString m_lastImagePath;
+    
+    QNetworkAccessManager* m_imageDownloader;
+    
+    void handleNewImageReady(const QJsonObject& data);
+    void downloadImage(const QString& remotePath);
+  
     QWebSocket *m_webSocket;
     TelescopeDataProcessor *m_dataProcessor;
     QNetworkAccessManager *m_networkManager;
@@ -181,4 +221,12 @@ private:
     double m_lastImageExposure;
     QString m_lastImageFilePath;
     int m_statusRotation;
+    QString m_telescopeIP;
+    QString m_imageSavePath;  // Path to save downloaded images
+    bool m_saveImagesEnabled;  // Flag to enable/disable saving
+    
+    void saveImageToFile(const QByteArray& imageData, const QString& originalPath,
+                        double ra, double dec, double exposure);
+    QString createImageSavePath();
+  
 };

@@ -30,6 +30,11 @@ OriginBackend::OriginBackend(QObject *parent)
     , m_logFile(nullptr)  // ADD THIS
     , m_logStream(nullptr)  // ADD THIS
     , m_statusRotation(0)  // ADD THIS
+    , m_cameraState(CameraState::Idle)
+    , m_lastExposureDuration(0.0)
+    , m_currentGain(200)
+    , m_imageDownloader(new QNetworkAccessManager(this))      
+    , m_saveImagesEnabled(true)  // ADD THIS - Enable by default for debugging
 {
     m_webSocket = new QWebSocket("", QWebSocketProtocol::VersionLatest, this);
     m_dataProcessor = new TelescopeDataProcessor(this);
@@ -61,8 +66,6 @@ OriginBackend::OriginBackend(QObject *parent)
     // Connect data processor signals
     connect(m_dataProcessor, &TelescopeDataProcessor::mountStatusUpdated, 
             this, &OriginBackend::updateStatus);
-    connect(m_dataProcessor, &TelescopeDataProcessor::newImageAvailable, 
-            this, &OriginBackend::imageReady);
 
     // Setup status update timer
     m_statusTimer->setInterval(5000); // Update every 5 seconds
@@ -78,6 +81,13 @@ OriginBackend::OriginBackend(QObject *parent)
             logWebSocketMessage("PING", "Keep-alive ping sent");
         }
     });
+    // Connect image download signals
+    connect(m_imageDownloader, &QNetworkAccessManager::finished,
+            this, &OriginBackend::onImageDownloadFinished);
+
+    // Initialize image save path
+    m_imageSavePath = createImageSavePath();
+    qDebug() << "Image save path:" << m_imageSavePath;
 
 }
 
@@ -461,19 +471,6 @@ void OriginBackend::setImageReady(bool ready)
     m_imageReady = ready;
 }
 
-bool OriginBackend::abortExposure()
-{
-    if (!isConnected()) {
-        return false;
-    }
-
-    sendCommand("CancelImaging", "TaskController");
-    
-    m_isExposing = false;
-    
-    return true;
-}
-
 // Exposure and ISO Control
 bool OriginBackend::setCameraExposure(double seconds)
 {
@@ -526,8 +523,8 @@ QImage OriginBackend::singleShot(int gain, int binning, int exposureTimeMicrosec
     timeoutTimer.setSingleShot(true);
     timeoutTimer.setInterval((exposureTimeMicroseconds / 1000) + 30000); // Exposure time + 30 seconds
 
-    connect(this, &OriginBackend::imageReady, &loop, &QEventLoop::quit);
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    //    connect(this, &OriginBackend::imageReady, &loop, &QEventLoop::quit);
+    //    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
 
     timeoutTimer.start();
     loop.exec();
@@ -609,6 +606,19 @@ void OriginBackend::onTextMessageReceived(const QString &message)
     QString command = obj["Command"].toString();
     QString type = obj["Type"].toString();
     QString source = obj["Source"].toString();
+
+    // Handle NewImageReady notification from Origin
+    if (type == "Notification" && command == "NewImageReady") {
+        handleNewImageReady(obj);
+    }
+    
+    // Handle responses to our commands
+    if (type == "Response") {
+        if (command == "RunSampleCapture") {
+            // Exposure started successfully
+            qDebug() << "Exposure command acknowledged";
+        }
+    }
     
     // Handle camera-specific responses
     if (type == "Response") {
@@ -786,7 +796,7 @@ void OriginBackend::requestImage(const QString &filePath) {
     bool isTiff = filePath.endsWith(".tiff", Qt::CaseInsensitive) || 
                   filePath.endsWith(".tif", Qt::CaseInsensitive);
     
-    // qDebug() << "Downloading:" << fullPath;
+    qDebug() << "Downloading:" << fullPath;
     
     QNetworkAccessManager *manager = new QNetworkAccessManager(this);
     QNetworkReply *reply = manager->get(request);
@@ -807,7 +817,10 @@ void OriginBackend::requestImage(const QString &filePath) {
             double dec = reply->property("dec").toDouble();
             double exposure = reply->property("exposure").toDouble();
             
-            // qDebug() << "Downloaded:" << imageData.size() << "bytes" << (isTiff ? "(TIFF)" : "(JPEG)");
+            qDebug() << "Downloaded:" << imageData.size() << "bytes" << (isTiff ? "(TIFF)" : "(JPEG)");
+            
+            // **ADD THIS** - Save image to file for debugging
+            saveImageToFile(imageData, filePath, ra, dec, exposure);
             
             if (isTiff) {
                 // Snapshot - emit special signal
@@ -815,19 +828,16 @@ void OriginBackend::requestImage(const QString &filePath) {
                 qDebug() << "Snapshot complete - resuming live stream";
                 emit tiffImageDownloaded(filePath, imageData, ra, dec, exposure);
             } else {
-                // Live stream - could emit different signal or handle directly
-                // For now, your existing code handles this
-		// Try to load as an image
-		QImage image;
-		if (image.loadFromData(imageData)) {
-		    m_lastImage = image;
-		    m_imageReady = true;
-
-		    qDebug() << "Image downloaded successfully, size:" << imageData.size() << "bytes";
-		    emit liveImageDownloaded(imageData, ra, dec, exposure);
-		} else {
-		    qWarning() << "Failed to load image from downloaded data";
-		}
+                // Live stream
+                QImage image;
+                if (image.loadFromData(imageData)) {
+                    m_lastImage = image;
+                    m_imageReady = true;
+                    qDebug() << "Image downloaded successfully, size:" << imageData.size() << "bytes";
+                    emit liveImageDownloaded(imageData, ra, dec, exposure);
+                } else {
+                    qWarning() << "Failed to load image from downloaded data";
+                }
             }
         } else {
             qWarning() << "Download error:" << reply->errorString();
@@ -859,6 +869,7 @@ double OriginBackend::degreesToRadians(double degrees)
     return degrees * M_PI / 180.0;
 }
 
+// Add this method to OriginBackend.cpp:
 void OriginBackend::initializeLogging() {
     // Create logs directory in user's Documents
     QString documentsPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
@@ -872,7 +883,6 @@ void OriginBackend::initializeLogging() {
     m_logFile = new QFile(logFileName, this);
     if (m_logFile->open(QIODevice::WriteOnly | QIODevice::Append)) {
         m_logStream = new QTextStream(m_logFile);
-        // Qt5 way to set encoding:
         m_logStream->setCodec("UTF-8");  // Change this line
         
         qDebug() << "WebSocket logging initialized:" << logFileName;
@@ -932,4 +942,300 @@ void OriginBackend::setCameraConnected(bool connected)
     
     m_status.isCameraLogicallyConnected = connected;
     qDebug() << "  Camera logical after:" << m_status.isCameraLogicallyConnected;
+}
+
+bool OriginBackend::startExposure(double duration, int iso)
+{
+    if (!isLogicallyConnected()) {
+        qWarning() << "Cannot start exposure - not connected";
+        return false;
+    }
+    
+    if (m_cameraState != CameraState::Idle) {
+        qWarning() << "Cannot start exposure - camera busy";
+        return false;
+    }
+    
+    // Store exposure parameters
+    m_lastExposureDuration = duration;
+    m_currentGain = iso;
+    m_lastExposureStartTime = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    m_imageReady = false;
+    m_lastImageData.clear();
+    
+    // Send command to Origin via WebSocket
+    QJsonObject command;
+    command["Command"] = "RunSampleCapture";
+    command["Destination"] = "TaskController";
+    command["Source"] = "AlpacaServer";
+    command["SequenceID"] = m_nextSequenceId++;
+    command["Type"] = "Command";
+    command["ExposureTime"] = duration;
+    command["ISO"] = iso;
+    
+    QString message = QJsonDocument(command).toJson(QJsonDocument::Compact);
+    
+    if (m_webSocket && m_webSocket->isValid()) {
+        m_webSocket->sendTextMessage(message);
+        m_cameraState = CameraState::Exposing;
+        
+        qDebug() << "Started exposure:" << duration << "sec, ISO:" << iso;
+        emit exposureStarted();
+        emit cameraStateChanged(static_cast<int>(m_cameraState));
+        
+        return true;
+    }
+    
+    return false;
+}
+
+bool OriginBackend::abortExposure()
+{
+    if (m_cameraState != CameraState::Exposing) {
+        return false;
+    }
+    
+    // Send abort command to Origin
+    QJsonObject command;
+    command["Command"] = "AbortExposure";
+    command["Destination"] = "Camera";
+    command["Source"] = "AlpacaServer";
+    command["SequenceID"] = m_nextSequenceId++;
+    command["Type"] = "Command";
+    
+    QString message = QJsonDocument(command).toJson(QJsonDocument::Compact);
+    
+    if (m_webSocket && m_webSocket->isValid()) {
+        m_webSocket->sendTextMessage(message);
+        m_cameraState = CameraState::Idle;
+        
+        qDebug() << "Aborted exposure";
+        emit cameraStateChanged(static_cast<int>(m_cameraState));
+        
+        return true;
+    }
+    
+    return false;
+}
+
+bool OriginBackend::setGain(int gain)
+{
+    if (!isLogicallyConnected()) {
+        return false;
+    }
+    
+    // Origin uses ISO, which maps to gain
+    m_currentGain = gain;
+    
+    // If you need to set gain for subsequent exposures, update camera parameters
+    QJsonObject command;
+    command["Command"] = "SetCaptureParameters";
+    command["Destination"] = "Camera";
+    command["Source"] = "AlpacaServer";
+    command["SequenceID"] = m_nextSequenceId++;
+    command["Type"] = "Command";
+    command["ISO"] = gain;
+    command["Exposure"] = m_lastExposureDuration;  // Keep current exposure
+    
+    QString message = QJsonDocument(command).toJson(QJsonDocument::Compact);
+    
+    if (m_webSocket && m_webSocket->isValid()) {
+        m_webSocket->sendTextMessage(message);
+        qDebug() << "Set gain/ISO to:" << gain;
+        return true;
+    }
+    
+    return false;
+}
+
+void OriginBackend::handleNewImageReady(const QJsonObject& data)
+{
+    QString fileLocation = data["FileLocation"].toString();
+    double ra = data["Ra"].toDouble();
+    double dec = data["Dec"].toDouble();
+    
+    qDebug() << "New image ready:" << fileLocation;
+    qDebug() << "  Position: RA=" << ra*180.0/15.0/M_PI << "Dec=" << dec*180.0/M_PI;
+    
+    // Update camera state
+    m_cameraState = CameraState::Reading;
+    emit cameraStateChanged(static_cast<int>(m_cameraState));
+    emit exposureComplete();
+    
+    // Store the path for download
+    m_lastImagePath = fileLocation;
+    
+    // Automatically download the image
+    downloadImage(fileLocation);
+}
+
+void OriginBackend::downloadImage(const QString& remotePath)
+{
+    if (!m_telescopeIP.isEmpty()) {
+        // Construct URL to download image from Origin
+        // Format: http://<telescope-ip>/SmartScope-1.0/dev2/<file-path>
+      QUrl url = QUrl(QString("http://%1/SmartScope-1.0/dev2/%2")
+                      .arg(m_telescopeIP, remotePath));
+        
+        qDebug() << "Downloading image from:" << url;
+        
+        QNetworkRequest request(url);
+        request.setRawHeader("Cache-Control", "no-cache");
+        
+        QNetworkReply* reply = m_imageDownloader->get(request);
+        
+        // Store metadata in reply for later use
+        reply->setProperty("remotePath", remotePath);
+    }
+}
+
+
+void OriginBackend::onImageDownloadFinished(QNetworkReply* reply)
+{
+    reply->deleteLater();
+    
+    if (reply->error() == QNetworkReply::NoError) {
+        // Successfully downloaded image
+        m_lastImageData = reply->readAll();
+        
+        // Determine format from file extension
+        QString remotePath = reply->property("remotePath").toString();
+        if (remotePath.endsWith(".jpg", Qt::CaseInsensitive)) {
+            m_lastImageFormat = "JPEG";
+        } else if (remotePath.endsWith(".tiff", Qt::CaseInsensitive) || 
+                   remotePath.endsWith(".tif", Qt::CaseInsensitive)) {
+            m_lastImageFormat = "TIFF";
+        } else {
+            m_lastImageFormat = "RAW";
+        }
+        
+        qDebug() << "Image downloaded:" << m_lastImageData.size() << "bytes";
+        qDebug() << "Format:" << m_lastImageFormat;
+
+        // **ADD THIS** - Save Alpaca-initiated images too
+        saveImageToFile(m_lastImageData, remotePath, 
+                       m_lastImageRa, m_lastImageDec, m_lastExposureDuration);
+
+        // Mark image as ready for Alpaca client to fetch
+        m_imageReady = true;
+        m_cameraState = CameraState::Idle;
+        
+        emit imageReady(remotePath);
+        emit cameraStateChanged(static_cast<int>(m_cameraState));
+        
+    } else {
+        qWarning() << "Failed to download image:" << reply->errorString();
+        m_cameraState = CameraState::Error;
+        emit cameraStateChanged(static_cast<int>(m_cameraState));
+    }
+}
+
+QString OriginBackend::createImageSavePath()
+{
+    // Create a directory in user's Documents for downloaded images
+    QString documentsPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    QString imageDir = documentsPath + "/CelestronOriginImages";
+    
+    // Create timestamped subdirectory for this session
+    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QString sessionDir = imageDir + "/session_" + timestamp;
+    
+    QDir dir;
+    if (dir.mkpath(sessionDir)) {
+        qDebug() << "Created image save directory:" << sessionDir;
+        return sessionDir;
+    } else {
+        qWarning() << "Failed to create image save directory:" << sessionDir;
+        return imageDir;  // Fallback to parent directory
+    }
+}
+
+void OriginBackend::setImageSavePath(const QString& path)
+{
+    QDir dir;
+    if (dir.mkpath(path)) {
+        m_imageSavePath = path;
+        qDebug() << "Image save path set to:" << m_imageSavePath;
+    } else {
+        qWarning() << "Failed to create image save path:" << path;
+    }
+}
+
+void OriginBackend::enableImageSaving(bool enable)
+{
+    m_saveImagesEnabled = enable;
+    qDebug() << "Image saving" << (enable ? "enabled" : "disabled");
+}
+
+void OriginBackend::saveImageToFile(const QByteArray& imageData, 
+                                    const QString& originalPath,
+                                    double ra, double dec, double exposure)
+{
+    if (!m_saveImagesEnabled || imageData.isEmpty()) {
+        return;
+    }
+    
+    // Determine file extension from original path
+    QString extension = "jpg";  // Default
+    if (originalPath.endsWith(".tiff", Qt::CaseInsensitive) || 
+        originalPath.endsWith(".tif", Qt::CaseInsensitive)) {
+        extension = "tiff";
+    } else if (originalPath.endsWith(".jpg", Qt::CaseInsensitive)) {
+        extension = "jpg";
+    } else if (originalPath.endsWith(".jpeg", Qt::CaseInsensitive)) {
+        extension = "jpeg";
+    }
+    
+    // Create filename with timestamp and metadata
+    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz");
+    QString raStr = QString::number(ra * 180.0 / M_PI / 15.0, 'f', 4);  // Convert to hours
+    QString decStr = QString::number(dec * 180.0 / M_PI, 'f', 4);  // Convert to degrees
+    
+    QString filename = QString("image_%1_ra%2_dec%3_exp%4s.%5")
+                       .arg(timestamp)
+                       .arg(raStr)
+                       .arg(decStr)
+                       .arg(exposure, 0, 'f', 2)
+                       .arg(extension);
+    
+    QString fullPath = m_imageSavePath + "/" + filename;
+    
+    // Save the image data
+    QFile file(fullPath);
+    if (file.open(QIODevice::WriteOnly)) {
+        qint64 bytesWritten = file.write(imageData);
+        file.close();
+        
+        if (bytesWritten == imageData.size()) {
+            qDebug() << "Saved image:" << fullPath;
+            qDebug() << "  Size:" << imageData.size() << "bytes";
+            qDebug() << "  RA:" << raStr << "hours";
+            qDebug() << "  Dec:" << decStr << "degrees";
+            qDebug() << "  Exposure:" << exposure << "seconds";
+            
+            // Also save metadata to a text file
+            QString metadataFile = fullPath + ".txt";
+            QFile meta(metadataFile);
+            if (meta.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QTextStream out(&meta);
+                out << "Image: " << filename << "\n";
+                out << "Timestamp: " << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << "\n";
+                out << "RA (hours): " << raStr << "\n";
+                out << "Dec (degrees): " << decStr << "\n";
+                out << "RA (radians): " << ra << "\n";
+                out << "Dec (radians): " << dec << "\n";
+                out << "Exposure (seconds): " << exposure << "\n";
+                out << "Size (bytes): " << imageData.size() << "\n";
+                out << "Format: " << extension.toUpper() << "\n";
+                out << "Original path: " << originalPath << "\n";
+                meta.close();
+                qDebug() << "  Metadata saved:" << metadataFile;
+            }
+        } else {
+            qWarning() << "Failed to write complete image data to:" << fullPath;
+        }
+    } else {
+        qWarning() << "Failed to open file for writing:" << fullPath;
+        qWarning() << "  Error:" << file.errorString();
+    }
 }
