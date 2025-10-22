@@ -1172,8 +1172,6 @@ if(ANDROID)
     add_subdirectory(kstarslite/res)
 endif(ANDROID)
 
-find_package(Qt5 COMPONENTS WebSockets REQUIRED)
-
 set(kstars_SRCS
     ${indi_SRCS}
     ${fits_SRCS}
@@ -1198,9 +1196,6 @@ set(kstars_SRCS
     # Generated files
     ${libkstarstools_ui_SRCS}
     ${libkstarswidgets_ui_SRCS}
-    telescopes/origin/OriginBackend.cpp
-    telescopes/origin/TelescopeDataProcessor.cpp
-    ekos/mount/originmount.cpp
 )
 
 set(kstarslite_SRCS
